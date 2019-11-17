@@ -1,24 +1,42 @@
 package main
 
 import (
+	"bufio"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
-	"math"
+	"net"
 	"os"
 	"strconv"
+	"strings"
 )
 
-type irisInfo struct {
-	sepalLength float64
-	sepalWidth  float64
-	petalLength float64
-	petalWidth  float64
-	species     string
+var species []string
+
+var remotehost string
+
+var irisUnknown IrisInfo
+
+type IrisInfo struct {
+	SepalLength float64
+	SepalWidth  float64
+	PetalLength float64
+	PetalWidth  float64
+	Species     string
+}
+
+type NodeInfo struct {
+	Num           int
+	NumNodes      int
+	IrisU         IrisInfo
+	RecordIrisSet []IrisInfo
+	K             int
 }
 
 func main() {
+
 	irisDF, err := os.Open("iris9.data")
 	if err != nil {
 		log.Fatal(err)
@@ -28,7 +46,7 @@ func main() {
 	reader := csv.NewReader(irisDF)
 	reader.Comma = ','
 
-	var recordSet []irisInfo
+	var recordSet []IrisInfo
 
 	for {
 		record, err := reader.Read()
@@ -38,82 +56,106 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-
+		//todas las filas en una lista
 		recordSet = append(recordSet, parseIrisRecord(record))
 	}
 
-	//K Nearest Neighbors
-
-	//fmt.Println(recordSet[0].sepalLength + 0.4)
-
 	// tipo de flor desconocida
-	var irisUnknown irisInfo
-	irisUnknown.sepalLength = 5.0
-	irisUnknown.sepalWidth = 3.3
-	irisUnknown.petalLength = 1.5
-	irisUnknown.petalWidth = 1.1
-	irisUnknown.species = "?"
 
-	recordSet = append(recordSet, irisUnknown)
+	irisUnknown.SepalLength = 5.0
+	irisUnknown.SepalWidth = 3.3
+	irisUnknown.PetalLength = 1.5
+	irisUnknown.PetalWidth = 1.1
+	irisUnknown.Species = "?"
 
-	var euclideanList []float64
+	//Comienza
+	var n int
+	var K int
 
-	//se deshace el irisInfo añadido por el usuario
-	lengthR := len(recordSet) - 1
-	//Calcula la distancia euclidiana para todos los objetos del recordSet
-	for i := 0; i < lengthR; i++ {
-		euclideanList = append(euclideanList, euclideanDist(recordSet[i], recordSet[len(recordSet)-1]))
+	gin := bufio.NewReader(os.Stdin)
+	fmt.Print("Ingrese su puerto: ")
+	port, _ := gin.ReadString('\n')
+	port = strings.TrimSpace(port)
+	//hostname := fmt.Sprintf("localhost:%s", port)
+
+	fmt.Print("Ingrese cantidad de nodos (puertos): ")
+	fmt.Scanf("%d\n", &n)
+	var remotehosts = make([]string, n)
+
+	for i := range remotehosts {
+		fmt.Printf("Puerto %d: ", i+1)
+		fmt.Scanf("%s\n", &(remotehosts[i]))
 	}
+	//fmt.Println(remotehosts)
 
-	fmt.Println(recordSet[5])
-	fmt.Println(recordSet[len(recordSet)-1])
-	//fmt.Println(euclideanDist(recordSet[5], recordSet[len(recordSet)-1]))
-	fmt.Println(euclideanList)
+	fmt.Print("Ingrese cantidad K : ")
+	fmt.Scanf("%d\n", &K)
 
-	//Encontrar las K distancias menores
-	//DEFINICION DE K
-	k := 5
+	go func() {
+		fmt.Println("Presione enter para comenzar...")
+		r := bufio.NewReader(os.Stdin)
+		r.ReadString('\n')
 
-	var min float64
-	var indiceEncontrado, indiceEliminar = 0, 0
-	var menores []float64
-	//copia de euclideanList
-	copiaEuLista := make([]float64, len(euclideanList))
-	copy(copiaEuLista, euclideanList)
-	for i := 0; i < k; i++ {
-		min = math.MaxInt64
-		for j := range euclideanList {
-			if min > euclideanList[j] {
-				min = euclideanList[j]
-				indiceEncontrado = j
-			}
+		for i := range remotehosts {
+			var sendInfo NodeInfo
+			sendInfo.Num = i
+			sendInfo.NumNodes = n
+			sendInfo.IrisU = irisUnknown
+			sendInfo.RecordIrisSet = recordSet
+			sendInfo.K = K
+			remotehost := fmt.Sprintf("localhost:%s", remotehosts[i])
+			//fmt.Println(remotehost)
+			go send(sendInfo, remotehost)
 		}
-		indiceEliminar = indiceEncontrado
-		menores = append(menores, euclideanList[indiceEliminar])
-		//eliminar valor de euclideanList para volver a recorrer la lista y encontrar al siguiente menor
-		euclideanList[indiceEliminar] = euclideanList[len(euclideanList)-1]
-		euclideanList[len(euclideanList)-1] = 0.0
-		euclideanList = euclideanList[:len(euclideanList)-1]
+	}()
 
+	server()
+
+}
+
+func server() {
+	host := fmt.Sprintf("localhost:8000")
+	ln, _ := net.Listen("tcp", host)
+	defer ln.Close()
+	for {
+		conn, _ := ln.Accept()
+		go handle(conn)
 	}
-	//fmt.Println(euclideanList)
-	fmt.Println(menores)
-	//fmt.Println(copiaEuLista)
-	fmt.Println(recordSet)
+}
 
-	//encontrar los menores recorriendo todo el set de nuevo y
-	//analizar si es versicolor, setosa o virginica
-	var irisSpecies []string
-	for j := 0; j < k; j++ {
-		for i := 0; i < lengthR; i++ {
-			if menores[j] == copiaEuLista[i] {
-				irisSpecies = append(irisSpecies, recordSet[i].species)
-			}
-		}
-	}
-	//K nearest neighbors
-	fmt.Println(irisSpecies)
+func send(sendInfo NodeInfo, rh string) {
+	conn, _ := net.Dial("tcp", rh)
+	defer conn.Close()
+	//fmt.Println(sendInfo)
+	bMsg, _ := json.Marshal(sendInfo)
 
+	fmt.Fprintln(conn, string(bMsg))
+}
+
+func handle(conn net.Conn) {
+	defer conn.Close()
+	r := bufio.NewReader(conn)
+	msg, _ := r.ReadString('\n')
+	var species []string
+	json.Unmarshal([]byte(msg), &species)
+
+	fmt.Println(species)
+
+	response(species)
+}
+func parseIrisRecord(record []string) IrisInfo {
+	var iris IrisInfo
+
+	iris.SepalLength, _ = strconv.ParseFloat(record[0], 64)
+	iris.SepalWidth, _ = strconv.ParseFloat(record[1], 64)
+	iris.PetalLength, _ = strconv.ParseFloat(record[2], 64)
+	iris.PetalWidth, _ = strconv.ParseFloat(record[3], 64)
+	iris.Species = record[4]
+
+	return iris
+}
+
+func response(irisSpecies []string) {
 	typeSetosa := 0
 	typeVersicolor := 0
 	typeVirginica := 0
@@ -140,29 +182,4 @@ func main() {
 	if typeSetosa > typeVirginica && typeSetosa > typeVersicolor {
 		fmt.Println("El tipo de flor para el set de datos ", irisUnknown, " es Setosa")
 	}
-}
-
-func parseIrisRecord(record []string) irisInfo {
-	var iris irisInfo
-
-	iris.sepalLength, _ = strconv.ParseFloat(record[0], 64)
-	iris.sepalWidth, _ = strconv.ParseFloat(record[1], 64)
-	iris.petalLength, _ = strconv.ParseFloat(record[2], 64)
-	iris.petalWidth, _ = strconv.ParseFloat(record[3], 64)
-	iris.species = record[4]
-
-	return iris
-}
-
-func euclideanDist(iris irisInfo, unknownIris irisInfo) float64 {
-	var distance float64
-	//distance := 0.0
-
-	distance += math.Pow(iris.sepalLength-unknownIris.sepalLength, 2)
-	distance += math.Pow(iris.sepalWidth-unknownIris.sepalWidth, 2)
-	distance += math.Pow(iris.petalLength-unknownIris.petalLength, 2)
-	distance += math.Pow(iris.petalWidth-unknownIris.petalWidth, 2)
-
-	distance = math.Sqrt(distance)
-	return distance
 }
